@@ -79,6 +79,61 @@ curl -sS -o /dev/null -w "download HTTP %{http_code} (expected 409)\n" \
   "$ARCHIVE_URL/api/batches/$BATCH/download/readings.csv"
 set -e
 
+line "10. seal a fresh batch with two files"
+SB="BATCH-SEAL-DEMO-$(date +%H%M%S)"
+printf 'id,v\n1,a\n' > "$TMP/a.csv"
+printf 'id,v\n2,b\n' > "$TMP/b.csv"
+curl -fsS -X POST "$ARCHIVE_URL/api/batches/$SB/files" \
+  -F filename=a.csv -F "file=@$TMP/a.csv" >/dev/null
+curl -fsS -X POST "$ARCHIVE_URL/api/batches/$SB/files" \
+  -F filename=b.csv -F "file=@$TMP/b.csv" >/dev/null
+curl -fsS -X POST "$ARCHIVE_URL/api/batches/$SB/seal" | python3 -c "
+import json,sys
+r = json.load(sys.stdin)
+m = r['seal']['manifest']
+print('sealed:', r['batch']['status'], '| files:', m['file_count'])
+for f in m['files']:
+    print(' ', f['filename'], f['length'], f['sha256'][:16] + '...')
+assert r['batch']['status'] == 'sealed'"
+
+line "11. a late CSV after sealing must be refused (no record outside manifest)"
+set +e
+curl -sS -o /dev/null -w "late upload HTTP %{http_code} (expected 409)\n" \
+  -X POST "$ARCHIVE_URL/api/batches/$SB/files" \
+  -F filename=late.csv -F "file=@$TMP/a.csv"
+set -e
+curl -fsS "$WITNESS_URL/batches/$SB" | python3 -c "
+import json,sys
+r = json.load(sys.stdin)
+print('witness files:', [i['filename'] for i in r['items']], '| sealed:', r['sealed'])
+assert {i['filename'] for i in r['items']} == {'a.csv','b.csv'}"
+
+line "12. download the signed manifest and verify it with the fixed public key"
+curl -fsS "$ARCHIVE_URL/api/batches/$SB/seal/download" -o "$TMP/seal.json"
+python3 - "$TMP/seal.json" <<'PY'
+import json, sys
+sys.path.insert(0, ".")
+from common.receipt import load_public_key, verify_manifest_envelope
+doc = json.load(open(sys.argv[1]))
+ok, err = verify_manifest_envelope(
+    load_public_key("keys/witness_ed25519.pub.pem"),
+    {"payload_json": json.dumps(doc["manifest"], sort_keys=True,
+                                separators=(",", ":"), ensure_ascii=False),
+     "signature": doc["signature"], "algorithm": doc["algorithm"],
+     "public_key_fingerprint": doc["public_key_fingerprint"]},
+    expected_batch_id=doc["batch_id"])
+print("manifest signature verifies:", ok, err or "")
+assert ok
+PY
+
+line "13. re-sealing returns the same single manifest"
+curl -fsS -X POST "$ARCHIVE_URL/api/batches/$SB/seal" | python3 -c "
+import json,sys
+r = json.load(sys.stdin)
+print('status:', r['batch']['status'], '| reopened:', r['batch']['sealed'])
+assert r['batch']['sealed'] is True"
+
 line "DEMO COMPLETE"
 echo "Open the web UI: $ARCHIVE_URL  (batch page: $ARCHIVE_URL/batches/$BATCH)"
+echo "Seal page:       $ARCHIVE_URL/seals"
 echo "Witness receipt list: $WITNESS_URL/receipts"

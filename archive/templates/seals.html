@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+{% block title %}批次封存 · 科研数据归档{% endblock %}
+{% block body %}
+<div class="card">
+  <h2>批次封存（冻结整批文件）</h2>
+  <div class="notice">
+    封存要求：本地原件、目录登记、见证已受理回执<b>逐项一致且非空</b>；
+    由见证端签署含<b>批号 + 每个文件名、长度、SHA-256</b>的完整清单；
+    归档端用固定公钥验签后才开放下载。封存后<b>永久拒绝新增文件</b>，
+    已收同文重传仍复用原回执。封存与上传交错时，在途文件要么已纳入清单，
+    要么被明确拒绝（409）；结果未查明时状态保持“封存待核”，不会报成功，
+    也不会重新开放添件。
+  </div>
+  <div class="row">
+    <label>批号 <input id="batch_id" placeholder="输入或选择批号" size="24"></label>
+    <button id="sealBtn">封存 / 查看状态</button>
+    <button class="secondary" id="resumeBtn">接续全部待核封存</button>
+    <button class="secondary" id="refreshBtn">刷新列表</button>
+  </div>
+  <div id="msg"></div>
+</div>
+
+<div class="card">
+  <h2>批次封存状态</h2>
+  <table id="sealTable">
+    <tr><th>批号</th><th>文件</th><th>已登记</th><th>封存状态</th>
+        <th>封存时间</th><th>清单下载</th></tr>
+  </table>
+  <p class="muted" id="emptyHint" hidden>暂无批次。</p>
+</div>
+
+<div class="card" id="detailCard" hidden>
+  <h2>封存详情 <span class="mono" id="detailBatch"></span></h2>
+  <div id="detail"></div>
+</div>
+{% endblock %}
+{% block script %}
+<script>
+const msg = document.getElementById('msg');
+const STATUS_CN = {
+  sealed: '已封存', seal_pending: '封存待核',
+  seal_failed: '封存未确认', seal_unverified: '封存校验失败',
+  complete: '已完整（未封存）', pending: '有待核文件', incomplete: '不完整',
+};
+function esc(v) {
+  return String(v == null ? '' : v).replace(/[&<>"']/g,
+    c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function pill(status) {
+  const label = STATUS_CN[status] || status;
+  return `<span class="pill ${esc(status)}">${esc(label)}</span>`;
+}
+function setMsg(text, cls) {
+  msg.className = cls || ''; msg.textContent = text;
+}
+async function jsonOf(r) {
+  try { return await r.json(); } catch (e) { return { detail: await r.text() }; }
+}
+
+async function loadList() {
+  const r = await fetch('/api/seals');
+  const data = await jsonOf(r);
+  const table = document.getElementById('sealTable');
+  table.querySelectorAll('tr:not(:first-child)').forEach(tr => tr.remove());
+  if (!r.ok) { setMsg('读取封存列表失败：' + JSON.stringify(data), 'bad'); return; }
+  const rows = data.batches || [];
+  document.getElementById('emptyHint').hidden = rows.length > 0;
+  for (const b of rows) {
+    const dl = b.status === 'sealed'
+      ? `<a href="/api/batches/${encodeURIComponent(b.batch_id)}/seal/download">下载清单</a>`
+      : '<span class="muted">未开放</span>';
+const tr = document.createElement('tr');
+    tr.innerHTML = `<td><a href="#" data-batch="${esc(b.batch_id)}">${esc(b.batch_id)}</a></td>
+      <td>${b.file_count}</td><td>${b.registered_count}</td>
+      <td>${pill(b.status)}</td>
+      <td class="muted">${esc(b.sealed_at || '')}</td>
+      <td>${dl}</td>`;
+    tr.querySelector('a[data-batch]').onclick = (e) => {
+      e.preventDefault(); showDetail(b.batch_id);
+    };
+    table.appendChild(tr);
+  }
+}
+
+async function showDetail(batchId) {
+  const card = document.getElementById('detailCard');
+  const box = document.getElementById('detail');
+  card.hidden = false;
+  document.getElementById('detailBatch').textContent = batchId;
+  box.innerHTML = '<p class="muted">读取中……</p>';
+  const r = await fetch(`/api/batches/${encodeURIComponent(batchId)}/seal`);
+  const data = await jsonOf(r);
+  let html = `<p>状态：${pill(data.status || 'unknown')}` +
+    (data.seal_state ? `（内部状态 ${esc(data.seal_state)}）` : '') + '</p>';
+  if (data.last_error) {
+    html += `<div class="notice ${data.sealed ? '' : 'bad'}">最近结果说明：
+      ${esc(data.last_error)}</div>`;
+  }
+  if (data.manifest) {
+    const m = data.manifest;
+    html += `<p>封存时间：<span class="mono">${esc(m.sealed_at)}</span>
+      文件数：${m.file_count}</p>
+      <table><tr><th>文件名</th><th>长度</th><th>SHA-256</th></tr>`;
+    for (const f of m.files) {
+      html += `<tr><td>${esc(f.filename)}</td><td>${f.length}</td>
+        <td class="mono">${esc(f.sha256)}</td></tr>`;
+    }
+    html += '</table>';
+    if (data.download_url) {
+      html += `<p><a href="${esc(data.download_url)}">下载已验签封存清单（JSON）</a></p>`;
+    }
+  } else if (data.seal_state === 'sealing') {
+    html += `<div class="notice">封存结果未查明（待核）。请勿添加文件；
+      点击“接续封存”向见证端查明结果。</div>
+      <button id="retryOne">接续封存</button>`;
+  } else if (data.seal_state === 'unverified') {
+    html += `<div class="notice bad">封存尚未确认。批次仍被视为已关闭，
+      不会重新开放添件；可重试同一清单。</div>
+      <button id="retryOne">重试同一清单封存</button>`;
+  } else if (data.sealed === false && data.seal_state === null &&
+             r.status === 200) {
+    html += `<p class="muted">该批次尚未封存。</p>`;
+  }
+  box.innerHTML = html;
+  const retry = document.getElementById('retryOne');
+  if (retry) retry.onclick = () => doSeal(batchId, true);
+}
+
+async function doSeal(batchId, retry) {
+  const url = `/api/batches/${encodeURIComponent(batchId)}/seal` + (retry ? '/retry' : '');
+  setMsg('封存中……（需等待见证端签署清单）', 'muted');
+  const r = await fetch(url, { method: 'POST' });
+  const data = await jsonOf(r);
+  if (r.status === 201 || (r.ok && data.seal && data.batch &&
+                           data.batch.sealed)) {
+    setMsg('封存成功：见证端清单已验签并保存，可下载。', 'ok');
+  } else if (r.status === 202) {
+    setMsg('封存待核：请求已发出但结果未查明，不会报成功，也不会重新开放添件；'
+           + '请稍后点“接续封存”。', 'warn');
+  } else if (r.status === 503) {
+    setMsg('见证端不可达，封存待核（未提交成功）。批次仍关闭，可重试。', 'warn');
+  } else if (r.status === 409) {
+    setMsg('封存被拒绝：' + JSON.stringify(data.detail || data.error
+           || data.last_error || data), 'bad');
+  } else if (r.status === 404) {
+    setMsg('批次不存在或尚未登记任何文件。', 'bad');
+  } else {
+    setMsg('封存失败：' + JSON.stringify(data), 'bad');
+  }
+  await loadList();
+  await showDetail(batchId);
+}
+
+document.getElementById('sealBtn').onclick = () => {
+  const batchId = document.getElementById('batch_id').value.trim();
+  if (!batchId) { setMsg('请填写批号', 'bad'); return; }
+  doSeal(batchId, false);
+};
+document.getElementById('resumeBtn').onclick = async () => {
+  const r = await fetch('/api/seals/resume', { method: 'POST' });
+  setMsg('接续结果：' + JSON.stringify(await jsonOf(r), null, 2), 'ok');
+  await loadList();
+};
+document.getElementById('refreshBtn').onclick = loadList;
+loadList();
+</script>
+{% endblock %}

@@ -13,6 +13,10 @@
 {% endblock %}
 {% block script %}
 <script>
+function esc(v) {
+  return String(v == null ? '' : v).replace(/[&<>"']/g,
+    c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
 const TYPE_CN = {
   missing_original: '缺件',
   tampered_original: '篡改',
@@ -38,6 +42,21 @@ document.getElementById('runBtn').onclick = async () => {
     ` 见证回执总数：${data.receipt_count}` +
     (data.empty ? '（见证清单为空，无回执可核查，不视为通过）' : '');
   let html = '';
+  if (data.seals && data.seals.length) {
+    html += `<h3>封存清单核查（${data.seals.length}）</h3>
+      <table><tr><th>批号</th><th>封存状态</th><th>问题</th></tr>`;
+    for (const s of data.seals) {
+      const problems = s.problems.length
+        ? s.problems.map(p => `<span class="bad">${esc(p.type)}</span>` +
+            `<div class="muted">${esc(p.detail || '')}</div>`).join('')
+        : '<span class="ok">无</span>';
+      html += `<tr><td>${esc(s.batch_id)}</td>
+        <td>${s.passed ? '<span class="pill good">已验签</span>'
+                       : '<span class="pill bad">异常</span>'}</td>
+        <td>${problems}</td></tr>`;
+    }
+    html += '</table>';
+  }
   for (const b of data.batches) {
     html += `<h3 class="${b.passed ? 'ok' : 'bad'}">批次 ${b.batch_id}
              （${b.passed ? '通过' : '存在问题'}）</h3>
@@ -52,7 +71,7 @@ document.getElementById('runBtn').onclick = async () => {
             `<span class="bad">${TYPE_CN[p.type] || p.type}</span>` +
             `<div class="muted">${p.detail || ''}</div>`).join('')
         : '<span class="ok">无</span>';
-      html += `<tr><td>${f.filename}</td>
+      html += `<tr><td>${esc(f.filename)}</td>
         <td>${f.receipt_signature_ok
             ? '<span class="pill good">通过</span>'
             : '<span class="pill bad">失败</span>'}</td>

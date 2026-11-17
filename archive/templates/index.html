@@ -10,7 +10,8 @@
     <button id="uploadBtn">上传归档</button>
   </div>
   <p class="muted">流程：本地保存原件 → 送独立见证 → 固定公钥验签 → 目录登记。
-     见证不可达时显示“待核”，不会当作未受理重投；同号同文自动复用回执，异文拒绝。</p>
+     见证不可达时显示“待核”，不会当作未受理重投；同号同文自动复用回执，异文拒绝。
+     批次可在 <a href="/seals">批次封存</a> 页冻结：封存后不再接受新文件。</p>
   <div id="msg"></div>
 </div>
 
@@ -18,13 +19,19 @@
   <h2>本地批次</h2>
   {% if batches %}
   <table>
-    <tr><th>批号</th><th>文件数</th><th>已登记</th><th>待核</th><th>首次出现</th><th></th></tr>
+    <tr><th>批号</th><th>文件数</th><th>已登记</th><th>待核</th><th>封存</th><th>首次出现</th><th></th></tr>
     {% for b in batches %}
     <tr>
       <td><a href="/batches/{{ b.batch_id }}">{{ b.batch_id }}</a></td>
       <td>{{ b.file_count }}</td>
       <td>{{ b.registered_count }}</td>
       <td>{{ b.pending_count }}</td>
+      <td>
+        {% if b.seal_state == 'sealed' %}<span class="pill sealed">已封存</span>
+        {% elif b.seal_state == 'sealing' %}<span class="pill pending">封存待核</span>
+        {% elif b.seal_state == 'unverified' %}<span class="pill bad">封存未确认</span>
+        {% else %}<span class="muted">未封存</span>{% endif %}
+      </td>
       <td class="muted">{{ b.first_seen }}</td>
       <td><a href="/batches/{{ b.batch_id }}">详情/下载</a></td>
     </tr>

@@ -6,21 +6,37 @@
   <div class="row">
     <button class="secondary" id="reconcileBtn">接续待核文件</button>
     <button class="secondary" id="refreshBtn">刷新</button>
+    <button id="sealBtn">封存该批</button>
+    <button class="secondary" id="retrySealBtn" hidden>接续封存</button>
+    <a id="sealDownload" hidden>下载封存清单</a>
   </div>
+  <div id="sealBox"></div>
   <div id="box"></div>
 </div>
 {% endblock %}
 {% block script %}
 <script>
 const batchId = {{ batch_id | tojson }};
+const STATUS_CN = {
+  sealed: '已封存', seal_pending: '封存待核',
+  seal_failed: '封存未确认', seal_unverified: '封存校验失败',
+  complete: '已完整（未封存）', pending: '有待核文件', incomplete: '不完整',
+};
+function esc(v) {
+  return String(v == null ? '' : v).replace(/[&<>"']/g,
+    c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
 async function load() {
   const r = await fetch(`/api/batches/${encodeURIComponent(batchId)}`);
   const box = document.getElementById('box');
   if (!r.ok) { box.innerHTML = '<p class="bad">批次不存在</p>'; return; }
   const b = await r.json();
-  const pill = b.status === 'complete' ? 'complete'
+  const pill = b.status === 'sealed' ? 'sealed'
+             : b.status.startsWith('seal_') ? b.status
+             : b.status === 'complete' ? 'complete'
              : b.status === 'pending' ? 'pending' : 'incomplete';
-  let html = `<p>整体状态：<span class="pill ${pill}">${b.status}</span>
+  let html = `<p>整体状态：<span class="pill ${pill}">${
+      STATUS_CN[b.status] || b.status}</span>
               （文件 ${b.file_count}，已登记 ${b.registered_count}）</p>
     <table><tr><th>文件</th><th>长度</th><th>SHA-256</th><th>状态</th>
     <th>回执/错误</th><th>下载</th></tr>`;
@@ -31,19 +47,62 @@ async function load() {
     const detail = f.status === 'registered'
       ? `<span class="mono">${f.receipt.algorithm} 签发于 ${f.receipt.issued_at}<br>
          sig=${f.receipt.signature.slice(0, 48)}…</span>`
-      : `<span class="warn">${f.last_error || ''}</span>`;
+      : `<span class="warn">${esc(f.last_error || '')}</span>`;
     const dl = f.status === 'registered'
       ? `<a href="/api/batches/${encodeURIComponent(batchId)}/download/${
            encodeURIComponent(f.filename)}">下载</a>`
       : '<span class="muted">未开放</span>';
-    html += `<tr><td>${f.filename}</td><td>${f.length}</td>
-      <td class="mono">${f.sha256}</td><td>${fpill}</td>
+    html += `<tr><td>${esc(f.filename)}</td><td>${f.length}</td>
+      <td class="mono">${esc(f.sha256)}</td><td>${fpill}</td>
       <td>${detail}</td><td>${dl}</td></tr>`;
   }
   html += '</table>';
   box.innerHTML = html;
+  // Seal status + manifest
+  const sr = await fetch(`/api/batches/${encodeURIComponent(batchId)}/seal`);
+  const sealBox = document.getElementById('sealBox');
+  const retryBtn = document.getElementById('retrySealBtn');
+  const dlLink = document.getElementById('sealDownload');
+  retryBtn.hidden = true; dlLink.hidden = true;
+  if (sr.ok) {
+    const s = await sr.json();
+    let sh = `<h3>封存</h3><p>状态：<span class="pill ${
+        esc(s.status)}">${esc(STATUS_CN[s.status] || s.status)}</span>`;
+    if (s.sealed_at) sh += ` 封存时间：<span class="mono">${esc(s.sealed_at)}</span>`;
+    sh += `</p>`;
+    if (s.last_error)
+      sh += `<div class="notice ${s.sealed ? '' : 'bad'}">${esc(s.last_error)}</div>`;
+    if (s.manifest) {
+      sh += `<p>清单文件数：${s.manifest.file_count}（见证端 Ed25519 签名已验签）</p>
+        <details><summary>查看完整清单</summary><table>
+        <tr><th>文件名</th><th>长度</th><th>SHA-256</th></tr>`;
+      for (const f of s.manifest.files)
+        sh += `<tr><td>${esc(f.filename)}</td><td>${f.length}</td>
+          <td class="mono">${esc(f.sha256)}</td></tr>`;
+      sh += '</table></details>';
+      if (s.download_url) { dlLink.href = s.download_url; dlLink.hidden = false; }
+    } else if (s.seal_state === 'sealing' || s.seal_state === 'unverified') {
+      sh += `<div class="notice">封存结果未确认（待核）：不会报成功，也不会重新
+        开放添件。可接续向见证端查明。</div>`;
+      retryBtn.hidden = false;
+    }
+    sealBox.innerHTML = sh;
+  } else {
+    sealBox.innerHTML = '<h3>封存</h3><p class="muted">该批次尚未封存。</p>';
+  }
+}
+async function doSeal(url) {
+  const r = await fetch(url, { method: 'POST' });
+  let data;
+  try { data = await r.json(); } catch (e) { data = { detail: await r.text() }; }
+  alert(`HTTP ${r.status}\n` + JSON.stringify(data, null, 2));
+  load();
 }
 document.getElementById('refreshBtn').onclick = load;
+document.getElementById('sealBtn').onclick = () =>
+  doSeal(`/api/batches/${encodeURIComponent(batchId)}/seal`);
+document.getElementById('retrySealBtn').onclick = () =>
+  doSeal(`/api/batches/${encodeURIComponent(batchId)}/seal/retry`);
 document.getElementById('reconcileBtn').onclick = async () => {
   const r = await fetch('/api/reconcile', { method: 'POST' });
   alert(JSON.stringify(await r.json(), null, 2));

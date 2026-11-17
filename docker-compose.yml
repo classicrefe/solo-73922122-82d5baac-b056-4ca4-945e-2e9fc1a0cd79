@@ -38,8 +38,11 @@ services:
       ARCHIVE_STORAGE: /data/originals
       ARCHIVE_PUBLIC_KEY: /app/keys/witness_ed25519.pub.pem
       ARCHIVE_CRASH_MARKER: /data/crash_after_witness.flag
+      ARCHIVE_SEAL_CRASH_MARKER: /data/crash_after_seal.flag
+      ARCHIVE_SEAL_FAIL_MARKER: /data/seal_write_fail.flag
       WITNESS_URL: http://witness:8001
       ARCHIVE_MAX_UPLOAD_BYTES: "2097152"
+      ARCHIVE_SEAL_TIMEOUT: "15"
     volumes:
       - archive_data:/data
     ports:
